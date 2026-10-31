@@ -1,0 +1,493 @@
+name: 构建
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  prepare:
+    name: 生成绑定
+    runs-on: windows-2025-vs2026
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 配置 .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: ./global.json
+
+      - name: 缓存 NuGet 包
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'dotnet-tools.json', 'Directory.Packages.props', 'src/OBSharp.Interop.Qt/packages.lock.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: 缓存 Qt 依赖
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cache/
+            .deps/
+          key: qt6-windows-x64-${{ hashFiles('.version') }}
+
+      - name: 配置 GitVersion
+        uses: gittools/actions/gitversion/setup@v4
+        with:
+          versionSpec: 6.x
+
+      - name: 计算包版本
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4
+
+      - name: 生成版本属性文件
+        run: |
+          @"
+          <Project>
+            <PropertyGroup>
+              <Version>${{ steps.gitversion.outputs.semVer }}</Version>
+              <VersionPrefix>${{ steps.gitversion.outputs.majorMinorPatch }}</VersionPrefix>
+              <VersionSuffix>${{ steps.gitversion.outputs.preReleaseTag }}</VersionSuffix>
+              <PackageVersion>${{ steps.gitversion.outputs.fullSemVer }}</PackageVersion>
+              <InformationalVersion>${{ steps.gitversion.outputs.informationalVersion }}</InformationalVersion>
+              <AssemblyVersion>${{ steps.gitversion.outputs.assemblySemVer }}</AssemblyVersion>
+              <FileVersion>${{ steps.gitversion.outputs.assemblySemFileVer }}</FileVersion>
+              <RepositoryBranch>${{ steps.gitversion.outputs.branchName }}</RepositoryBranch>
+              <RepositoryCommit>${{ steps.gitversion.outputs.sha }}</RepositoryCommit>
+            </PropertyGroup>
+          </Project>
+          "@ | Set-Content -Path Directory.Version.props -Encoding utf8
+
+      - name: 上传版本属性文件
+        uses: actions/upload-artifact@v7
+        with:
+          name: version-properties
+          path: Directory.Version.props
+          if-no-files-found: error
+
+      - name: 验证 GitHub Packages 身份
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dotnet nuget update source OBSharp `
+            --username "github-actions[bot]" `
+            --password "$env:GITHUB_TOKEN" `
+            --store-password-in-clear-text `
+            --configfile nuget.config
+
+      - name: 还原 Qt 依赖
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/Restore-ObsDepsQt6.ps1 -Platform windows -Arch x64
+
+      - name: 还原 .NET 工具
+        run: dotnet tool restore
+
+      - name: 生成绑定
+        run: ./scripts/Invoke-SourceGenerator.ps1
+
+      - name: 上传生成的托管绑定
+        uses: actions/upload-artifact@v7
+        with:
+          name: managed-bindings
+          path: src/OBSharp.Interop.Qt/Generated/
+          if-no-files-found: error
+
+      - name: 上传生成的 Native 绑定
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-bindings
+          path: src/OBSharp.Interop.Qt.Native/Generated/
+          if-no-files-found: error
+
+  native:
+    name: 构建 Native（${{ matrix.rid }}）
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: windows-2025-vs2026
+            platform: windows
+            arch: x64
+          - rid: win-arm64
+            runner: windows-11-vs2026-arm
+            platform: windows
+            arch: arm64
+          - rid: linux-x64
+            runner: ubuntu-26.04
+            platform: linux
+            arch: x64
+          - rid: linux-arm64
+            runner: ubuntu-26.04-arm
+            platform: linux
+            arch: arm64
+          - rid: osx-x64
+            runner: macos-26
+            platform: macos
+            arch: x64
+          - rid: osx-arm64
+            runner: macos-26
+            platform: macos
+            arch: arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 下载生成的 Native 绑定
+        uses: actions/download-artifact@v8
+        with:
+          name: native-bindings
+          path: src/OBSharp.Interop.Qt.Native/Generated/
+
+      - name: 缓存 Qt 依赖
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cache/
+            .deps/
+          key: qt6-${{ matrix.platform }}-${{ matrix.arch }}-${{ hashFiles('.version') }}
+
+      - name: 还原 Qt 依赖
+        if: matrix.platform != 'linux'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/Restore-ObsDepsQt6.ps1 -Platform ${{ matrix.platform }} -Arch ${{ matrix.arch }}
+
+      - name: 安装 Linux 构建依赖
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          if ($LASTEXITCODE -ne 0) {
+            throw "apt-get update failed with exit code $LASTEXITCODE."
+          }
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build qt6-base-dev qt6-tools-dev qt6-multimedia-dev qt6-spatialaudio-dev qt6-svg-dev
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installing Linux dependencies failed with exit code $LASTEXITCODE."
+          }
+
+      - name: 安装 macOS 构建工具
+        if: matrix.platform == 'macos'
+        run: brew install ninja
+
+      - name: 配置 Native 项目
+        run: |
+          $configureArgs = @('--preset', '${{ matrix.rid }}')
+          if (Test-Path .deps) {
+            $configureArgs += "-DCMAKE_PREFIX_PATH=$((Resolve-Path .deps).Path)"
+          }
+          cmake @configureArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native configuration failed with exit code $LASTEXITCODE."
+          }
+
+      - name: 构建并安装 Native 库
+        run: |
+          cmake --build --preset ${{ matrix.rid }}-release
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native build failed with exit code $LASTEXITCODE."
+          }
+          cmake --install out/build/${{ matrix.rid }} --config Release --prefix out/native
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native install failed with exit code $LASTEXITCODE."
+          }
+
+      - name: 上传 Native 库
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.rid }}
+          path: out/native/
+          if-no-files-found: error
+
+  aggregate:
+    name: 汇总 Native 库
+    needs: native
+    runs-on: ubuntu-26.04
+    steps:
+      - name: 下载 win-x64 Native 库
+        uses: actions/download-artifact@v8
+        with:
+          name: native-win-x64
+          path: out/runtimes/win-x64/native
+
+      - name: 下载 win-arm64 Native 库
+        uses: actions/download-artifact@v8
+        with:
+          name: native-win-arm64
+          path: out/runtimes/win-arm64/native
+
+      - name: 下载 linux-x64 Native 库
+        uses: actions/download-artifact@v8
+        with:
+          name: native-linux-x64
+          path: out/runtimes/linux-x64/native
+
+      - name: 下载 linux-arm64 Native 库
+        uses: actions/download-artifact@v8
+        with:
+          name: native-linux-arm64
+          path: out/runtimes/linux-arm64/native
+
+      - name: 下载 osx-x64 Native 库
+        uses: actions/download-artifact@v8
+        with:
+          name: native-osx-x64
+          path: out/runtimes/osx-x64/native
+
+      - name: 下载 osx-arm64 Native 库
+        uses: actions/download-artifact@v8
+        with:
+          name: native-osx-arm64
+          path: out/runtimes/osx-arm64/native
+
+      - name: 验证所有 RID 的 Native 库
+        run: |
+          $rids = @('win-x64', 'linux-x64', 'osx-x64', 'win-arm64', 'linux-arm64', 'osx-arm64')
+          foreach ($rid in $rids) {
+            $assets = @(Get-ChildItem "out/runtimes/$rid/native" -File)
+            if ($assets.Count -eq 0) {
+              throw "No native library was downloaded for $rid."
+            }
+          }
+
+      - name: 上传汇总后的 Native 库
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-assets
+          path: out/runtimes/
+          if-no-files-found: error
+
+  packages:
+    name: 打包 ${{ matrix.package-id }}
+    needs:
+      - prepare
+      - aggregate
+    runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package-id: OBSharp.Interop.Qt
+            artifact-name: managed
+            kind: managed
+          - package-id: OBSharp.Interop.Qt.runtimes.win-x64
+            artifact-name: runtime-win-x64
+            kind: runtime
+            rid: win-x64
+          - package-id: OBSharp.Interop.Qt.runtimes.linux-x64
+            artifact-name: runtime-linux-x64
+            kind: runtime
+            rid: linux-x64
+          - package-id: OBSharp.Interop.Qt.runtimes.osx-x64
+            artifact-name: runtime-osx-x64
+            kind: runtime
+            rid: osx-x64
+          - package-id: OBSharp.Interop.Qt.runtimes.win-arm64
+            artifact-name: runtime-win-arm64
+            kind: runtime
+            rid: win-arm64
+          - package-id: OBSharp.Interop.Qt.runtimes.linux-arm64
+            artifact-name: runtime-linux-arm64
+            kind: runtime
+            rid: linux-arm64
+          - package-id: OBSharp.Interop.Qt.runtimes.osx-arm64
+            artifact-name: runtime-osx-arm64
+            kind: runtime
+            rid: osx-arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 下载版本属性文件
+        uses: actions/download-artifact@v8
+        with:
+          name: version-properties
+          path: .
+
+      - name: 配置 .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: ./global.json
+
+      - name: 缓存 NuGet 包
+        if: matrix.kind == 'managed'
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('global.json', 'dotnet-tools.json', 'Directory.Packages.props', 'src/OBSharp.Interop.Qt/packages.lock.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: 下载生成的托管绑定
+        if: matrix.kind == 'managed'
+        uses: actions/download-artifact@v8
+        with:
+          name: managed-bindings
+          path: src/OBSharp.Interop.Qt/Generated/
+
+      - name: 下载汇总后的 Native 库
+        if: matrix.kind == 'runtime'
+        uses: actions/download-artifact@v8
+        with:
+          name: native-assets
+          path: out/runtimes/
+
+      - name: 还原托管程序集
+        if: matrix.kind == 'managed'
+        run: dotnet restore --graph --artifacts-path artifacts
+
+      - name: 构建托管程序集
+        if: matrix.kind == 'managed'
+        run: dotnet build --graph --artifacts-path artifacts --configuration Release --no-restore
+
+      - name: 打包托管程序集
+        if: matrix.kind == 'managed'
+        run: dotnet pack --graph --artifacts-path artifacts --configuration Release --no-restore --no-build --include-symbols --include-source --output artifacts\packages
+
+      - name: 还原 Native 运行时项目
+        if: matrix.kind == 'runtime'
+        env:
+          RuntimePackageRid: ${{ matrix.rid }}
+        run: dotnet restore src/OBSharp.Interop.Qt.Native/OBSharp.Interop.Qt.Runtime.proj --graph --artifacts-path artifacts
+
+      - name: 打包 Native 运行时包
+        if: matrix.kind == 'runtime'
+        env:
+          RuntimePackageRid: ${{ matrix.rid }}
+          NativeAssetPath: ${{ github.workspace }}\out\runtimes\${{ matrix.rid }}\native
+        run: dotnet pack src/OBSharp.Interop.Qt.Native/OBSharp.Interop.Qt.Runtime.proj --graph --artifacts-path artifacts --configuration Release --no-restore --no-build --output artifacts\packages
+
+      - name: 验证并暂存 NuGet 包
+        env:
+          PACKAGE_ID: ${{ matrix.package-id }}
+        run: |
+          $package = @(Get-ChildItem artifacts/packages -Filter "$env:PACKAGE_ID.*.nupkg" -File |
+            Where-Object { $_.Extension -eq '.nupkg' })
+          if ($package.Count -ne 1) {
+            throw "Expected one .nupkg for $env:PACKAGE_ID, found $($package.Count)."
+          }
+          New-Item -ItemType Directory -Force -Path package-artifact | Out-Null
+          Copy-Item -LiteralPath $package[0].FullName -Destination package-artifact/
+
+      - name: 上传 NuGet 包
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-${{ matrix.artifact-name }}
+          path: package-artifact/*.nupkg
+          if-no-files-found: error
+
+  collect:
+    name: 汇总 NuGet 包
+    needs: packages
+    runs-on: ubuntu-26.04
+    steps:
+      - name: 下载所有包产物
+        uses: actions/download-artifact@v8
+        with:
+          pattern: nuget-*
+          path: artifacts/packages
+          merge-multiple: true
+
+      - name: 验证七个 NuGet 包并汇总校验和
+        run: |
+          $expectedIds = @(
+            'OBSharp.Interop.Qt',
+            'OBSharp.Interop.Qt.runtimes.win-x64',
+            'OBSharp.Interop.Qt.runtimes.linux-x64',
+            'OBSharp.Interop.Qt.runtimes.osx-x64',
+            'OBSharp.Interop.Qt.runtimes.win-arm64',
+            'OBSharp.Interop.Qt.runtimes.linux-arm64',
+            'OBSharp.Interop.Qt.runtimes.osx-arm64'
+          )
+          $packages = @(Get-ChildItem artifacts/packages -Filter '*.nupkg' -File)
+          if ($packages.Count -ne $expectedIds.Count) {
+            throw "Expected seven NuGet packages, found $($packages.Count)."
+          }
+          foreach ($packageId in $expectedIds) {
+            $matches = @($packages | Where-Object { $_.Name -like "$packageId.*.nupkg" })
+            if ($matches.Count -ne 1) {
+              throw "Expected one package for $packageId, found $($matches.Count)."
+            }
+          }
+          "### NuGet packages" >> $env:GITHUB_STEP_SUMMARY
+          "| Package | SHA-256 |" >> $env:GITHUB_STEP_SUMMARY
+          "| --- | --- |" >> $env:GITHUB_STEP_SUMMARY
+          foreach ($package in $packages) {
+            $hash = (Get-FileHash $package.FullName -Algorithm SHA256).Hash
+            "| $($package.Name) | $hash |" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: 上传完整 NuGet 包集合
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-packages
+          path: artifacts/packages/*.nupkg
+          if-no-files-found: error
+
+  publish:
+    name: 发布 NuGet 包
+    needs: collect
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: ./global.json
+          cache: false
+
+      - name: 配置 OBSharp NuGet 源
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dotnet nuget update source OBSharp `
+            --username "github-actions[bot]" `
+            --password "$env:GITHUB_TOKEN" `
+            --store-password-in-clear-text `
+            --configfile nuget.config
+
+      - name: 下载 NuGet 包
+        uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: artifacts/packages
+
+      - name: 推送 NuGet 包到 OBSharp
+        run: |
+          $packages = @(Get-ChildItem artifacts/packages -Filter '*.nupkg' -File)
+          if ($packages.Count -ne 7) {
+            throw "Expected seven NuGet packages, found $($packages.Count)."
+          }
+          foreach ($package in $packages) {
+            dotnet nuget push $package.FullName `
+              --source OBSharp `
+              --skip-duplicate
+            if ($LASTEXITCODE -ne 0) {
+              throw "Pushing $($package.Name) failed with exit code $LASTEXITCODE."
+            }
+          }

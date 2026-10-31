@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>OBSharp.Interop.Qt</PackageId>
+    <Description>Managed Qt bindings for OBSharp.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+</Project>
