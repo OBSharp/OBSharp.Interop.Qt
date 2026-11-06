@@ -3,6 +3,14 @@
 # 不需要预先安装任何 C++ 环境，只要有网络即可。
 # =========================================================================
 
+# 防止被重复 include 时重复执行生成器。
+include_guard(GLOBAL)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(STATUS "OBSharp: Linux 平台使用系统包 (qt6-base-dev 等) ，跳过自动下载")
+  return()
+endif()
+
 # 1. 读取根目录的 .version
 set(_obsdeps_version_file "${CMAKE_CURRENT_LIST_DIR}/../.version")
 if(NOT EXISTS "${_obsdeps_version_file}")
@@ -11,11 +19,6 @@ endif()
 file(READ "${_obsdeps_version_file}" _obsdeps_version)
 string(STRIP "${_obsdeps_version}" _obsdeps_version)
 message(STATUS "OBSharp: 依赖版本读取为 ${_obsdeps_version}")
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  message(STATUS "OBSharp: Linux 平台请使用系统包（qt6-base-dev 等），跳过自动下载")
-  return()
-endif()
 
 # 2. 判定目标架构（结合你的 CMakePresets.json）
 set(_target_arch "x64")
@@ -28,6 +31,17 @@ endif()
 # 3. 从 GitHub API 获取 Release 信息并缓存
 set(_gh_json "${CMAKE_CURRENT_BINARY_DIR}/obs-deps-${_obsdeps_version}.json")
 if(NOT EXISTS "${_gh_json}")
+  message(STATUS "OBSharp: GitHub API 缓存不存在，将会下载...")
+  set(_need_download_json TRUE)
+else()
+  file(READ "${_gh_json}" _gh_json_content)
+  if(NOT _gh_json_content)
+    message(STATUS "OBSharp: GitHub API 缓存为空，将会重新下载...")
+    set(_need_download_json TRUE)
+  endif()
+endif()
+
+if(_need_download_json)
   message(STATUS "OBSharp: 从 GitHub API 获取 Release 信息...")
   file(DOWNLOAD "https://api.github.com/repos/obsproject/obs-deps/releases/tags/${_obsdeps_version}" "${_gh_json}" STATUS _dl_status)
   list(GET _dl_status 0 _dl_code)
@@ -127,5 +141,7 @@ endif()
 
 # 6. 下载目标架构并加入 CMAKE_PREFIX_PATH
 _obsharp_download_qt6("${_target_arch}" _target_qt)
+set(OBSHARP_QT_ROOT "${_target_qt}")
 list(APPEND CMAKE_PREFIX_PATH "${_target_qt}")
+message(STATUS "OBSharp: Qt6 目标路径已加入 OBSHARP_QT_ROOT: ${_target_qt}")
 message(STATUS "OBSharp: Qt6 目标路径已加入 CMAKE_PREFIX_PATH: ${_target_qt}")

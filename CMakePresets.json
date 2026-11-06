@@ -8,8 +8,8 @@
       "description": "Windows x64，使用 Visual Studio 18 2026 和 Windows SDK 10.0.26100.0。",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64,version=10.0.26100.0",
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
+      "binaryDir": "${sourceDir}/artifacts/obj/OBSharp.Interop.Qt.Native/${presetName}",
+      "installDir": "${sourceDir}/src/OBSharp.Interop.Qt/runtimes/${presetName}/native",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -22,8 +22,8 @@
       "description": "可在 Windows x64 主机上交叉编译 ARM64。需要安装 VS 的 C++ ARM64 生成工具及对应架构的依赖。",
       "generator": "Visual Studio 18 2026",
       "architecture": "ARM64,version=10.0.26100.0",
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
+      "binaryDir": "${sourceDir}/artifacts/obj/OBSharp.Interop.Qt.Native/${presetName}",
+      "installDir": "${sourceDir}/src/OBSharp.Interop.Qt/runtimes/${presetName}/native",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -35,8 +35,8 @@
       "displayName": "Linux x64（发行版 GCC + Qt6）",
       "description": "原生 Linux x64 构建，使用发行版 GCC 和 Qt6。CEF 由项目依赖配置获取。",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
+      "binaryDir": "${sourceDir}/artifacts/obj/OBSharp.Interop.Qt.Native/${presetName}",
+      "installDir": "${sourceDir}/src/OBSharp.Interop.Qt/runtimes/${presetName}/native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       },
@@ -51,8 +51,8 @@
       "displayName": "Linux ARM64（发行版 GCC + Qt6）",
       "description": "原生 Linux ARM64 构建，使用 ARM64 主机上的发行版 GCC 和 Qt6。交叉编译时还需配置目标 sysroot 和依赖。",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
+      "binaryDir": "${sourceDir}/artifacts/obj/OBSharp.Interop.Qt.Native/${presetName}",
+      "installDir": "${sourceDir}/src/OBSharp.Interop.Qt/runtimes/${presetName}/native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       },
@@ -67,8 +67,8 @@
       "displayName": "macOS ARM64（Apple Silicon）",
       "description": "构建 macOS ARM64 版本。CEF 使用对应架构的依赖，Qt6 可使用 universal 版本。",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
+      "binaryDir": "${sourceDir}/artifacts/obj/OBSharp.Interop.Qt.Native/${presetName}",
+      "installDir": "${sourceDir}/src/OBSharp.Interop.Qt/runtimes/${presetName}/native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
@@ -85,8 +85,8 @@
       "displayName": "macOS x64（Intel）",
       "description": "构建 macOS x86_64 版本。Apple Silicon 主机也可交叉编译，但需要匹配的目标架构依赖。",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
+      "binaryDir": "${sourceDir}/artifacts/obj/OBSharp.Interop.Qt.Native/${presetName}",
+      "installDir": "${sourceDir}/src/OBSharp.Interop.Qt/runtimes/${presetName}/native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_OSX_ARCHITECTURES": "x86_64",
@@ -103,62 +103,38 @@
     {
       "name": "win-x64-debug",
       "configurePreset": "win-x64",
-      "configuration": "Debug",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configuration": "Debug"
     },
     {
       "name": "win-x64-release",
       "configurePreset": "win-x64",
-      "configuration": "Release",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configuration": "Release"
     },
     {
       "name": "win-arm64-debug",
       "configurePreset": "win-arm64",
-      "configuration": "Debug",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configuration": "Debug"
     },
     {
       "name": "win-arm64-release",
       "configurePreset": "win-arm64",
-      "configuration": "Release",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configuration": "Release"
     },
     {
       "name": "linux-x64-release",
-      "configurePreset": "linux-x64",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configurePreset": "linux-x64"
     },
     {
       "name": "linux-arm64-release",
-      "configurePreset": "linux-arm64",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configurePreset": "linux-arm64"
     },
     {
       "name": "osx-arm64-release",
-      "configurePreset": "osx-arm64",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configurePreset": "osx-arm64"
     },
     {
       "name": "osx-x64-release",
-      "configurePreset": "osx-x64",
-      "targets": [
-        "OBSharp.Interop.Qt.Native"
-      ]
+      "configurePreset": "osx-x64"
     }
   ]
 }

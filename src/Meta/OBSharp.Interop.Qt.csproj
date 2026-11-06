@@ -1,0 +1,99 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      This is a meta package: its payload is the generated runtime.json, not
+      an assembly. NuGet still refuses to create an empty .snupkg (NU5017),
+      so build output is enabled just far enough for the symbol package to
+      exist; StripBuildOutputFromPackage removes it from the .nupkg again.
+    -->
+    <IncludeBuildOutput>true</IncludeBuildOutput>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <RuntimeJsonTemplate Include="runtime.json.template" />
+  </ItemGroup>
+  
+  <UsingTask
+    TaskName="GenerateRuntimeJson"
+    TaskFactory="RoslynCodeTaskFactory"
+    AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+
+    <ParameterGroup>
+      <TemplateFiles ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <Version ParameterType="System.String" Required="true" />
+      <OutputDirectory ParameterType="System.String" Required="true" />
+      <GeneratedFiles ParameterType="Microsoft.Build.Framework.ITaskItem[]" Output="true" />
+    </ParameterGroup>
+
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="Microsoft.Build.Framework" />
+      <Using Namespace="Microsoft.Build.Utilities" />
+
+      <Code Type="Fragment" Language="cs">
+        var generatedFiles = new List&lt;ITaskItem&gt;();
+
+        Directory.CreateDirectory(OutputDirectory);
+
+        foreach (var template in TemplateFiles)
+        {
+            var sourcePath = template.GetMetadata("FullPath");
+
+            var fileName = Path.GetFileNameWithoutExtension(sourcePath);
+            var outputPath = Path.Combine(OutputDirectory, fileName);
+
+            var content = File.ReadAllText(sourcePath);
+            content = content.Replace("{{VERSION}}", Version);
+
+            File.WriteAllText(outputPath, content);
+
+            generatedFiles.Add(new TaskItem(outputPath));
+        }
+
+        GeneratedFiles = generatedFiles.ToArray();
+      </Code>
+    </Task>
+
+  </UsingTask>
+
+  <!--
+    Run before NuGet collects @(None) into @(_PackageFiles), otherwise the
+    generated runtime.json is too late and NU5017 is raised.
+  -->
+  <Target Name="GenerateRuntimeJson"
+          BeforeTargets="_GetPackageFiles">
+
+    <GenerateRuntimeJson
+      TemplateFiles="@(RuntimeJsonTemplate)"
+      Version="$(Version)"
+      OutputDirectory="$(IntermediateOutputPath)">
+
+      <Output TaskParameter="GeneratedFiles"
+              ItemName="_GeneratedRuntimeJson" />
+
+    </GenerateRuntimeJson>
+
+    <ItemGroup>
+      <None Include="@(_GeneratedRuntimeJson)"
+            Pack="true"
+            PackagePath="/" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Drop the empty assembly/XML output from the .nupkg while keeping
+    @(_TargetPathsToSymbols), so the .snupkg is valid but the package still
+    behaves as a pure meta package.
+  -->
+  <Target Name="StripBuildOutputFromPackage"
+          AfterTargets="_WalkEachTargetPerFramework">
+    <ItemGroup>
+      <_BuildOutputInPackage Remove="@(_BuildOutputInPackage)" />
+    </ItemGroup>
+  </Target>
+
+</Project>

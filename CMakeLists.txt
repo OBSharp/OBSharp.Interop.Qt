@@ -1,11 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
+
 project(OBSharp.Interop.Qt.Native LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 自动下载并配置 Qt6（内部会自己读取 .version 并去 GitHub 下载）
-include(cmake/obs-deps.cmake)
+# 准备 Qt6 依赖
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/obs-deps.cmake")
 
-# 进入真正的编译目标
+# 生成 Qt 绑定源码
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/code-gen.cmake")
+
+# 配置 Native 编译目标
 add_subdirectory(src/OBSharp.Interop.Qt.Native)

@@ -3,9 +3,16 @@
   "isRoot": true,
   "tools": {
     "obsharp.interop.nativebindgenerator": {
-      "version": "0.0.1-build.19",
+      "version": "0.0.1-alpha.4",
       "commands": [
         "OBSharp.Interop.NativeBindGenerator"
+      ],
+      "rollForward": false
+    },
+    "shimakaze.gitsemver": {
+      "version": "0.0.1-preview.1",
+      "commands": [
+        "gitver"
       ],
       "rollForward": false
     }

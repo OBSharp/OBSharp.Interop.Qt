@@ -1,7 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <PackageId>OBSharp.Interop.Qt</PackageId>
-    <Description>Managed Qt bindings for OBSharp.</Description>
-    <IsPackable>true</IsPackable>
+    <PackageId>OBSharp.Interop.Qt.$(RuntimeIdentifier)</PackageId>
+    <DisableRuntimeMarshalling>true</DisableRuntimeMarshalling>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="runtimes\$(RuntimeIdentifier)\native\**\*"
+          Pack="True"
+          PackagePath="%(Identity)" />
+  </ItemGroup>
+
 </Project>

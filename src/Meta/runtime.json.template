@@ -1,0 +1,24 @@
+{
+  "runtimes": {
+    "win-x64": {
+      "OBSharp.Interop.Qt": {
+        "OBSharp.Interop.Qt.runtime.win-x64": "{{VERSION}}"
+      }
+    },
+    "win-arm64": {
+      "OBSharp.Interop.Qt": {
+        "OBSharp.Interop.Qt.runtime.win-arm64": "{{VERSION}}"
+      }
+    },
+    "linux-x64": {
+      "OBSharp.Interop.Qt": {
+        "OBSharp.Interop.Qt.runtime.linux-x64": "{{VERSION}}"
+      }
+    },
+    "linux-arm64": {
+      "OBSharp.Interop.Qt": {
+        "OBSharp.Interop.Qt.runtime.linux-arm64": "{{VERSION}}"
+      }
+    }
+  }
+}

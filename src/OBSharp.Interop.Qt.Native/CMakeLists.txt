@@ -1,20 +1,21 @@
-if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/Generated/generated-sources.cmake")
+if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/Generated/generated-modules.cmake")
     message(FATAL_ERROR
         "Missing generated Qt sources. Run scripts/Invoke-SourceGenerator.ps1 before configuring.")
 endif()
 
-include(Generated/generated-sources.cmake)
+if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/Generated/generated-libraries.cmake")
+    message(FATAL_ERROR
+        "Missing generated native library manifest. Regenerate the bindings before configuring.")
+endif()
+
+# 模块清单由 code-gen.cmake 写入 generated-modules.cmake；
+# 库划分清单由生成器写入 generated-libraries.cmake：
+# 单个 PE 的导出表上限为 65535 项，导出数超过上限时生成器会自动拆成多个库。
+include(Generated/generated-modules.cmake)
+include(Generated/generated-libraries.cmake)
 
 # 现在的 CMAKE_PREFIX_PATH 里已经由 obs-deps.cmake 塞好了刚刚下载的 Qt6 路径
 find_package(Qt6 REQUIRED COMPONENTS ${OBSHARP_QT_GENERATED_MODULES})
-
-add_library(OBSharp.Interop.Qt.Native SHARED
-    ${OBSHARP_QT_GENERATED_SOURCES}
-    ${OBSHARP_QT_GENERATED_HEADERS}
-)
-
-target_compile_features(OBSharp.Interop.Qt.Native PRIVATE cxx_std_20)
-target_compile_definitions(OBSharp.Interop.Qt.Native PRIVATE OBSHARP_EXPORTS)
 
 set(qt_targets)
 foreach(module IN LISTS OBSHARP_QT_GENERATED_MODULES)
@@ -45,14 +46,54 @@ if(Designer IN_LIST OBSHARP_QT_GENERATED_MODULES)
     endif()
 endif()
 
-target_link_libraries(OBSharp.Interop.Qt.Native PRIVATE ${qt_targets})
-
-set_target_properties(OBSharp.Interop.Qt.Native PROPERTIES
-    OUTPUT_NAME "OBSharp.Interop.Qt.Native"
-    CXX_EXTENSIONS OFF
+file(GLOB OBSHARP_QT_GENERATED_HEADERS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/Generated/*.h"
+    "${CMAKE_CURRENT_LIST_DIR}/Generated/*.hpp"
 )
 
-install(TARGETS OBSharp.Interop.Qt.Native
+foreach(library IN LISTS OBSHARP_NATIVE_LIBRARIES)
+    string(TOUPPER "${library}" library_key)
+    string(REGEX REPLACE "[^A-Z0-9]" "_" library_key "${library_key}")
+    set(library_source_dir "${OBSHARP_NATIVE_LIBRARY_${library_key}_SOURCE_DIR}")
+
+    # 每个库只收自己目录下的 .cpp：主库在 Generated 根目录，附属库在 Generated/<库名>/，
+    # 因此这里用 GLOB 而不是 GLOB_RECURSE，避免把别的库的源码拉进来。
+    file(GLOB library_sources CONFIGURE_DEPENDS "${library_source_dir}/*.cpp")
+    if(NOT library_sources)
+        message(FATAL_ERROR
+            "No generated C++ sources for native library ${library}: ${library_source_dir}")
+    endif()
+
+    add_library(${library} SHARED
+        ${library_sources}
+        ${OBSHARP_QT_GENERATED_HEADERS}
+    )
+
+    target_compile_features(${library} PRIVATE cxx_std_20)
+    target_compile_definitions(${library} PRIVATE OBSHARP_EXPORTS)
+
+    # MSVC 专属选项：
+    # /bigobj —— 生成的绑定源码符号与节数极多，超出 COFF 默认限制；
+    # /utf-8 —— 源码与执行字符集统一为 UTF-8，Qt 头文件中的非 ASCII 字面量不至告警或乱码；
+    # /MP —— 生成器按类拆分后每个类是一个翻译单元，且都要解析体积很大的公共头文件，
+    #        必须并行编译，否则单个库要编译数小时。
+    if(MSVC)
+        target_compile_options(${library} PRIVATE
+            /bigobj
+            /utf-8
+            /MP
+        )
+    endif()
+
+    target_link_libraries(${library} PRIVATE ${qt_targets})
+
+    set_target_properties(${library} PROPERTIES
+        OUTPUT_NAME "${library}"
+        CXX_EXTENSIONS OFF
+    )
+endforeach()
+
+install(TARGETS ${OBSHARP_NATIVE_LIBRARIES}
     RUNTIME DESTINATION .
     LIBRARY DESTINATION .
     ARCHIVE DESTINATION lib
