@@ -8,13 +8,6 @@
         "OBSharp.Interop.NativeBindGenerator"
       ],
       "rollForward": false
-    },
-    "shimakaze.gitsemver": {
-      "version": "0.0.1-preview.1",
-      "commands": [
-        "gitver"
-      ],
-      "rollForward": false
     }
   }
 }

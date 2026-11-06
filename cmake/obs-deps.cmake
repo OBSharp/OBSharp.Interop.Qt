@@ -21,34 +21,160 @@ string(STRIP "${_obsdeps_version}" _obsdeps_version)
 message(STATUS "OBSharp: 依赖版本读取为 ${_obsdeps_version}")
 
 # 2. 判定目标架构（结合你的 CMakePresets.json）
-set(_target_arch "x64")
+# 注意：obs-deps 的资产命名在各平台并不统一。
+#   Windows：x64 / arm64
+#   macOS：  x86_64 / arm64
+if(APPLE)
+  set(_target_arch "x86_64")
+else()
+  set(_target_arch "x64")
+endif()
+
 if(CMAKE_GENERATOR_PLATFORM MATCHES "ARM64" OR CMAKE_VS_PLATFORM_NAME MATCHES "ARM64")
   set(_target_arch "arm64")
 elseif(CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
   set(_target_arch "arm64")
+elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+  set(_target_arch "x86_64")
+elseif(APPLE AND NOT CMAKE_OSX_ARCHITECTURES AND
+       CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "arm64")
+  # 未显式指定架构时按宿主机架构选择；Apple Silicon 上默认是 arm64。
+  set(_target_arch "arm64")
 endif()
 
-# 3. 从 GitHub API 获取 Release 信息并缓存
+# 3. 从 GitHub API 获取 Release 信息（含各资产的 SHA256 digest）
+#
+# GitHub API 对未认证请求限流为 60 次/小时/IP，而 GitHub Actions 的
+# 托管运行器（尤其 macOS）共享出口 IP，很容易被整体限流，
+# 表现为 "HTTP response code said error" 且退避重试无效。
+# 因此这里按以下顺序取数据，任一成功即可：
+#   1) 已缓存且可解析的 JSON；
+#   2) 带 GITHUB_TOKEN / GH_TOKEN 的认证请求（5000 次/小时）；
+#   3) 未认证请求（带退避重试），作为最后手段。
 set(_gh_json "${CMAKE_CURRENT_BINARY_DIR}/obs-deps-${_obsdeps_version}.json")
-if(NOT EXISTS "${_gh_json}")
-  message(STATUS "OBSharp: GitHub API 缓存不存在，将会下载...")
-  set(_need_download_json TRUE)
-else()
+set(_gh_json_valid FALSE)
+
+if(EXISTS "${_gh_json}")
   file(READ "${_gh_json}" _gh_json_content)
-  if(NOT _gh_json_content)
-    message(STATUS "OBSharp: GitHub API 缓存为空，将会重新下载...")
-    set(_need_download_json TRUE)
+  if(_gh_json_content)
+    string(JSON _assets_type ERROR_VARIABLE _assets_error
+      TYPE "${_gh_json_content}" "assets")
+    if(NOT _assets_error AND _assets_type STREQUAL "ARRAY")
+      set(_gh_json_valid TRUE)
+      message(STATUS "OBSharp: 复用已缓存的 GitHub API 响应")
+    else()
+      message(STATUS "OBSharp: 缓存的 GitHub API 响应无效，将会重新下载...")
+    endif()
+  endif()
+else()
+  message(STATUS "OBSharp: GitHub API 缓存不存在，将会下载...")
+endif()
+
+# 收集可用的认证令牌（CI 中由 workflow 注入 GITHUB_TOKEN）。
+set(_gh_auth_tokens "")
+foreach(_gh_token_var IN ITEMS GITHUB_TOKEN GH_TOKEN)
+  if(DEFINED ENV{${_gh_token_var}} AND
+     NOT "$ENV{${_gh_token_var}}" STREQUAL "")
+    list(APPEND _gh_auth_tokens "$ENV{${_gh_token_var}}")
+  endif()
+endforeach()
+
+# 尝试下载一次 Release JSON；成功且内容可解析时返回 TRUE。
+#
+# 注意 CMake 的 HTTPHEADER 语义：每个 HTTPHEADER 关键字只接受「一个」
+# header 字符串，多传的参数会被静默当作 "Unexpected argument" 丢弃。
+# 因此必须为每个 header 重复写 HTTPHEADER，不能写成
+# `HTTPHEADER ${header_list}`——那样只有第一个 header 生效，
+# Authorization 会被丢掉，token 形同虚设（仍是 60 次/小时的匿名配额）。
+# 这里通过 _obsharp_gh_download 的 ARGN 逐条展开成重复的 HTTPHEADER。
+function(_obsharp_gh_download _url _out_file _out_ok_var)
+  set(_header_arguments "")
+  foreach(_header IN LISTS ARGN)
+    list(APPEND _header_arguments HTTPHEADER "${_header}")
+  endforeach()
+
+  file(DOWNLOAD "${_url}" "${_out_file}"
+    ${_header_arguments}
+    STATUS _dl_status
+    TLS_VERIFY ON)
+
+  list(GET _dl_status 0 _dl_code)
+  set(_ok FALSE)
+
+  if(_dl_code EQUAL 0)
+    file(READ "${_out_file}" _candidate_content)
+    string(JSON _candidate_assets_type ERROR_VARIABLE _candidate_assets_error
+      TYPE "${_candidate_content}" "assets")
+    if(NOT _candidate_assets_error AND _candidate_assets_type STREQUAL "ARRAY")
+      set(_ok TRUE)
+    else()
+      # 403/404 等错误响应体不是合法 Release JSON，丢弃避免误用。
+      file(REMOVE "${_out_file}")
+    endif()
+  else()
+    file(REMOVE "${_out_file}")
+  endif()
+
+  set("${_out_ok_var}" "${_ok}" PARENT_SCOPE)
+endfunction()
+
+if(NOT _gh_json_valid)
+  message(STATUS "OBSharp: 从 GitHub API 获取 Release 信息...")
+
+  set(_gh_tmp "${_gh_json}.tmp")
+  set(_gh_download_attempts 4)
+
+  foreach(_attempt RANGE 1 ${_gh_download_attempts})
+    if(_gh_auth_tokens)
+      # 认证请求配额充足，命中即止。
+      foreach(_gh_token IN LISTS _gh_auth_tokens)
+        _obsharp_gh_download(
+          "https://api.github.com/repos/obsproject/obs-deps/releases/tags/${_obsdeps_version}"
+          "${_gh_tmp}" _gh_download_ok
+          "User-Agent: OBSharp.Interop.Qt-CMake"
+          "Accept: application/vnd.github+json"
+          "Authorization: Bearer ${_gh_token}")
+        if(_gh_download_ok)
+          file(RENAME "${_gh_tmp}" "${_gh_json}")
+          set(_gh_json_valid TRUE)
+          break()
+        endif()
+      endforeach()
+      if(_gh_json_valid)
+        break()
+      endif()
+    else()
+      _obsharp_gh_download(
+        "https://api.github.com/repos/obsproject/obs-deps/releases/tags/${_obsdeps_version}"
+        "${_gh_tmp}" _gh_download_ok
+        "User-Agent: OBSharp.Interop.Qt-CMake"
+        "Accept: application/vnd.github+json")
+      if(_gh_download_ok)
+        file(RENAME "${_gh_tmp}" "${_gh_json}")
+        set(_gh_json_valid TRUE)
+        break()
+      endif()
+    endif()
+
+    message(STATUS
+      "OBSharp: 获取 GitHub API 失败（第 ${_attempt}/${_gh_download_attempts} 次），将重试")
+
+    if(_attempt LESS ${_gh_download_attempts})
+      # 依次退避 2/4/8 秒，避免瞬时故障直接终止配置。
+      math(EXPR _gh_backoff "1 << ${_attempt}")
+      execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep "${_gh_backoff}")
+    endif()
+  endforeach()
+
+  if(NOT _gh_json_valid)
+    message(FATAL_ERROR
+      "OBSharp: 请求 GitHub API 失败。"
+      " 未认证请求限流为 60 次/小时/IP，共享运行器很容易触发；"
+      " 请设置环境变量 GITHUB_TOKEN 或 GH_TOKEN 后重试。"
+      " 目标地址：https://api.github.com/repos/obsproject/obs-deps/releases/tags/${_obsdeps_version}")
   endif()
 endif()
 
-if(_need_download_json)
-  message(STATUS "OBSharp: 从 GitHub API 获取 Release 信息...")
-  file(DOWNLOAD "https://api.github.com/repos/obsproject/obs-deps/releases/tags/${_obsdeps_version}" "${_gh_json}" STATUS _dl_status)
-  list(GET _dl_status 0 _dl_code)
-  if(NOT _dl_code EQUAL 0)
-    message(FATAL_ERROR "OBSharp: 请求 GitHub API 失败，请检查网络。")
-  endif()
-endif()
 file(READ "${_gh_json}" _gh_json_content)
 
 # 4. 内部函数：执行具体的下载、校验和解压
@@ -59,9 +185,9 @@ function(_obsharp_download_qt6 _arch _out_dir)
     set(_filename "macos-deps-qt6-${_obsdeps_version}-${_arch}.tar.xz")
   endif()
 
-  # 从 JSON 里提取 digest
-  string(JSON _count LENGTH "${_gh_json_content}" "assets")
+  # 从 Release JSON 的 assets 中取出该资产的 sha256 digest。
   set(_sha "")
+  string(JSON _count LENGTH "${_gh_json_content}" "assets")
   if(_count GREATER 0)
     math(EXPR _max "${_count}-1")
     foreach(_i RANGE 0 ${_max})
@@ -75,7 +201,9 @@ function(_obsharp_download_qt6 _arch _out_dir)
   endif()
 
   if(NOT _sha)
-    message(FATAL_ERROR "OBSharp: 在 Release 中找不到 ${_filename} 的哈希校验值。")
+    message(FATAL_ERROR
+      "OBSharp: 在 obs-deps Release ${_obsdeps_version} 中找不到"
+      " ${_filename} 的 SHA256 校验值。")
   endif()
 
   # 区分缓存目录和依赖解压目录

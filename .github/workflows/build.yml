@@ -46,7 +46,7 @@ jobs:
         run: |
           "### Version Information" >> $env:GITHUB_STEP_SUMMARY
           '```' >> $env:GITHUB_STEP_SUMMARY
-          $Version = dotnet tool run gitver | ConvertFrom-Json
+          $Version = dotnet tool exec Shimakaze.GitSemVer --version 0.0.1-preview.1 | ConvertFrom-Json
           $Version >> $env:GITHUB_STEP_SUMMARY
           '```' >> $env:GITHUB_STEP_SUMMARY
           @"
@@ -121,6 +121,28 @@ jobs:
           path: .cache
           key: native-deps-${{ matrix.rid }}-${{ steps.get-native-deps-version.outputs.OBS_DEPS_VERSION }}
 
+      - name: 安装 Linux 构建依赖
+        if: startsWith(matrix.rid, 'linux-')
+        run: |
+          # 运行镜像已预装 clang / cmake / ninja / GCC，只需补齐 Qt6 开发包。
+          # Linux 使用发行版 Qt6（obs-deps.cmake 在 Linux 上会跳过自动下载）。
+          $Packages = @(
+            'qt6-base-dev'        # Core Concurrent Gui Widgets Network Xml OpenGL OpenGLWidgets
+            'qt6-multimedia-dev'  # Multimedia MultimediaWidgets SpatialAudio
+            'qt6-svg-dev'         # Svg SvgWidgets
+            'qt6-tools-dev'       # UiTools Designer DesignerComponentsPrivate
+          )
+
+          sudo apt-get update
+          if ($LASTEXITCODE -ne 0) {
+            throw "apt-get update 失败，退出码 $LASTEXITCODE。"
+          }
+
+          sudo apt-get install -y --no-install-recommends $Packages
+          if ($LASTEXITCODE -ne 0) {
+            throw "安装 Qt6 开发包失败，退出码 $LASTEXITCODE。"
+          }
+
       - name: 配置 .Net 环境
         uses: actions/setup-dotnet@v6
         with:
@@ -143,6 +165,11 @@ jobs:
           path: .
 
       - name: 配置 Native 项目
+        env:
+          # obs-deps 需要查询 GitHub API 才能拿到依赖包的校验值。
+          # 未认证请求限流为 60 次/小时/IP，而托管运行器共享出口 IP
+          # （macOS 尤其容易触发），因此用 token 走 5000 次/小时的配额。
+          GITHUB_TOKEN: ${{ github.token }}
         run: cmake --preset ${{ matrix.rid }}
 
       - name: 生成 Native 项目
@@ -197,7 +224,10 @@ jobs:
       - name: 下载构建产物
         uses: actions/download-artifact@v8
         with:
-          name: nuget-packages-*
+          # download-artifact v8 的 name 不支持通配符，多产物必须用 pattern。
+          # merge-multiple 让各 RID 的包摊平到同一目录，供后续校验和与打包使用。
+          pattern: nuget-packages-*
+          merge-multiple: true
           path: artifacts/package/release/
 
       - name: 生成校验和

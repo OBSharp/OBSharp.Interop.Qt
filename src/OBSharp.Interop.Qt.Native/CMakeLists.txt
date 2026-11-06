@@ -36,13 +36,21 @@ if(Designer IN_LIST OBSHARP_QT_GENERATED_MODULES)
         )
         list(APPEND qt_targets "${OBSHARP_QT_DESIGNER_COMPONENTS_LIBRARY}")
     else()
-        find_file(OBSHARP_QT_DESIGNER_COMPONENTS_LIBRARY
-            NAMES libQt6DesignerComponents.so.6
-            HINTS ${CMAKE_PREFIX_PATH}
-            PATH_SUFFIXES "lib/${CMAKE_LIBRARY_ARCHITECTURE}" lib64 lib
-            REQUIRED
-        )
-        list(APPEND qt_targets "${OBSHARP_QT_DESIGNER_COMPONENTS_LIBRARY}")
+        # Linux 发行版：qt6-tools-dev 提供 Qt6DesignerComponentsPrivate 的
+        # CMake 配置包（同时依赖 libqt6designercomponents6 提供 .so.6）。
+        # 优先使用导入目标，因为 Qt6 的私有目标会带上必要的编译定义。
+        find_package(Qt6DesignerComponentsPrivate QUIET)
+        if(TARGET Qt6::DesignerComponentsPrivate)
+            list(APPEND qt_targets Qt6::DesignerComponentsPrivate)
+        else()
+            find_file(OBSHARP_QT_DESIGNER_COMPONENTS_LIBRARY
+                NAMES libQt6DesignerComponents.so.6
+                HINTS ${CMAKE_PREFIX_PATH}
+                PATH_SUFFIXES "lib/${CMAKE_LIBRARY_ARCHITECTURE}" lib64 lib
+                REQUIRED
+            )
+            list(APPEND qt_targets "${OBSHARP_QT_DESIGNER_COMPONENTS_LIBRARY}")
+        endif()
     endif()
 endif()
 

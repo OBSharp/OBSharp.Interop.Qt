@@ -83,63 +83,232 @@ endif()
 # Qt include 目录解析
 # -------------------------------------------------------------------------
 
+# 兼容四种 Qt 安装布局：
+#   常规安装：  <root>/include/QtCore/QtCore
+#   直接根目录：<root>/QtCore/QtCore（OBSHARP_QT_INCLUDE_DIR 指向 include 目录）
+#   macOS framework：<root>/lib/QtCore.framework/Headers/QtCore
+#   Linux 发行版：/usr/include/<multiarch>/qt6/QtCore/QtCore（由 Qt6 CMake 包解析）
+set(_obsharp_qt_include "")
+set(_obsharp_qt_frameworks_dir "")
+set(_obsharp_qt_resolved FALSE)
+set(_obsharp_qt_root_candidates "")
+
+# 探测一个候选根目录。命中后写入 _obsharp_qt_include 与
+# _obsharp_qt_frameworks_dir，并把 _obsharp_qt_resolved 置为 TRUE。
+#
+# 注意：macOS 的 obs-deps 是「混合布局」——QtCore/QtGui 等模块以
+# framework 形式放在 <root>/lib 下，而 QtUiPlugin 等少数模块只有
+# 普通的 <root>/include/Qt<Module> 目录，不存在对应 framework。
+# 因此两个根目录需要同时记录，不能互斥。
+function(_obsharp_qt_probe_root _candidate)
+  if("${_candidate}" STREQUAL "")
+    return()
+  endif()
+
+  get_filename_component(_root "${_candidate}" ABSOLUTE)
+  string(REGEX REPLACE "[/\\\\]+$" "" _root "${_root}")
+
+  # Qt6::Core 的 include 属性在 framework 布局下直接指向
+  # .../<Module>.framework/Headers，需要回退到 framework 的父目录。
+  if(_root MATCHES "^(.*)/[A-Za-z0-9]+\\.framework/Headers$")
+    set(_root "${CMAKE_MATCH_1}")
+  elseif(_root MATCHES "^(.*)/[A-Za-z0-9]+\\.framework/Versions/[^/]+/Headers$")
+    set(_root "${CMAKE_MATCH_1}")
+  elseif(_root MATCHES "^(.*)/[A-Za-z0-9]+\\.framework$")
+    set(_root "${CMAKE_MATCH_1}")
+  endif()
+
+  set(_probe_include "")
+  set(_probe_frameworks_dir "")
+
+  if(EXISTS "${_root}/QtCore/QtCore")
+    set(_probe_include "${_root}")
+  endif()
+
+  if(EXISTS "${_root}/include/QtCore/QtCore")
+    set(_probe_include "${_root}/include")
+  endif()
+
+  if(IS_DIRECTORY "${_root}/lib/QtCore.framework")
+    set(_probe_frameworks_dir "${_root}/lib")
+    # 混合布局：framework 之外仍可能有 <root>/include/Qt<Module>。
+    if(NOT _probe_include AND IS_DIRECTORY "${_root}/include")
+      set(_probe_include "${_root}/include")
+    endif()
+  elseif(IS_DIRECTORY "${_root}/QtCore.framework")
+    set(_probe_frameworks_dir "${_root}")
+  endif()
+
+  if(_probe_include OR _probe_frameworks_dir)
+    set(_obsharp_qt_include "${_probe_include}" PARENT_SCOPE)
+    set(_obsharp_qt_frameworks_dir "${_probe_frameworks_dir}" PARENT_SCOPE)
+    set(_obsharp_qt_resolved TRUE PARENT_SCOPE)
+  endif()
+endfunction()
+
+# 解析某个 Qt 模块的头文件目录。
+# framework 布局下 Headers 是指向 Versions/Current/Headers 的符号链接，
+# 解压工具未必保留符号链接，因此这里依次尝试真实目录。
+function(_obsharp_qt_module_dir _module _out_var)
+  set(_module_name "Qt${_module}")
+  set(_candidates "")
+
+  if(_obsharp_qt_frameworks_dir)
+    list(APPEND _candidates
+      "${_obsharp_qt_frameworks_dir}/${_module_name}.framework/Headers"
+      "${_obsharp_qt_frameworks_dir}/${_module_name}.framework/Versions/A/Headers"
+      "${_obsharp_qt_frameworks_dir}/${_module_name}.framework/Versions/Current/Headers"
+    )
+  endif()
+
+  if(_obsharp_qt_include)
+    list(APPEND _candidates "${_obsharp_qt_include}/${_module_name}")
+  endif()
+
+  foreach(_dir IN LISTS _candidates)
+    if(EXISTS "${_dir}/${_module_name}")
+      set("${_out_var}" "${_dir}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+
+  set("${_out_var}" "" PARENT_SCOPE)
+endfunction()
+
 if(DEFINED OBSHARP_QT_INCLUDE_DIR AND
    NOT "${OBSHARP_QT_INCLUDE_DIR}" STREQUAL "")
-  get_filename_component(_obsharp_qt_include
-    "${OBSHARP_QT_INCLUDE_DIR}" ABSOLUTE)
+  # 显式配置优先：该变量既可以指向 Qt 安装根目录，也可以直接指向 include 目录。
+  _obsharp_qt_probe_root("${OBSHARP_QT_INCLUDE_DIR}")
+  if(NOT _obsharp_qt_resolved)
+    message(FATAL_ERROR
+      "OBSharp: OBSHARP_QT_INCLUDE_DIR 不是有效的 Qt 头文件目录："
+      "${OBSHARP_QT_INCLUDE_DIR}")
+  endif()
 else()
-  set(_obsharp_qt_include "")
+  # 1) 由 obs-deps.cmake 或上层配置显式提供的候选根目录。
+  if(DEFINED OBSHARP_QT_ROOT AND NOT "${OBSHARP_QT_ROOT}" STREQUAL "")
+    list(APPEND _obsharp_qt_root_candidates "${OBSHARP_QT_ROOT}")
+  endif()
 
-  # obs-deps.cmake 成功准备依赖后应公开 OBSHARP_QT_ROOT。
-  if(DEFINED OBSHARP_QT_ROOT AND
-     EXISTS "${OBSHARP_QT_ROOT}/include/QtCore/QtCore")
-    set(_obsharp_qt_include "${OBSHARP_QT_ROOT}/include")
-  elseif(DEFINED _target_qt AND
-         EXISTS "${_target_qt}/include/QtCore/QtCore")
-    # 兼容尚未更新的 obs-deps.cmake。
-    set(_obsharp_qt_include "${_target_qt}/include")
+  # 兼容尚未更新的 obs-deps.cmake。
+  if(DEFINED _target_qt AND NOT "${_target_qt}" STREQUAL "")
+    list(APPEND _obsharp_qt_root_candidates "${_target_qt}")
   endif()
 
   # 兼容变量名或 include 顺序发生变化的情况。
-  if(NOT _obsharp_qt_include AND DEFINED QT_INCLUDE_DIRS)
-    foreach(_candidate IN LISTS QT_INCLUDE_DIRS)
-      if(EXISTS "${_candidate}/QtCore/QtCore")
-        set(_obsharp_qt_include "${_candidate}")
-        break()
-      endif()
-    endforeach()
+  if(DEFINED QT_INCLUDE_DIRS)
+    list(APPEND _obsharp_qt_root_candidates ${QT_INCLUDE_DIRS})
   endif()
 
-  # 最后从 .deps 中按目录名倒序探测。
-  if(NOT _obsharp_qt_include)
-    file(GLOB _obsharp_qt_candidates
-      LIST_DIRECTORIES TRUE
-      "${_obsharp_project_root}/.deps/obs-deps-qt6-*/include"
-    )
-    list(SORT _obsharp_qt_candidates ORDER DESCENDING)
+  # 2) 先探测显式提供的候选根目录：显式配置的优先级最高。
+  foreach(_candidate IN LISTS _obsharp_qt_root_candidates)
+    if(_obsharp_qt_resolved)
+      break()
+    endif()
+    _obsharp_qt_probe_root("${_candidate}")
+  endforeach()
 
-    foreach(_candidate IN LISTS _obsharp_qt_candidates)
-      if(EXISTS "${_candidate}/QtCore/QtCore")
-        set(_obsharp_qt_include "${_candidate}")
+  # 3) 向 Qt6 的 CMake 包查询头文件目录。
+  #    这是 Linux 发行版与 macOS framework 布局下最可靠的来源：
+  #    发行版 Qt 的头文件在 /usr/include/<multiarch>/qt6，
+  #    仅凭 <prefix>/include 无法推断，必须依赖 Qt6::Core 的目标属性。
+  if(NOT _obsharp_qt_resolved)
+    find_package(Qt6 QUIET COMPONENTS Core)
+    if(TARGET Qt6::Core)
+      get_target_property(_obsharp_qt_core_include_dirs
+        Qt6::Core INTERFACE_INCLUDE_DIRECTORIES)
+
+      if(_obsharp_qt_core_include_dirs)
+        foreach(_candidate IN LISTS _obsharp_qt_core_include_dirs)
+          if(_candidate MATCHES "^\\$<")
+            # 生成器表达式（如 $<BUILD_INTERFACE:...>）无法在配置期求值。
+            continue()
+          endif()
+
+          _obsharp_qt_probe_root("${_candidate}")
+
+          # Qt6::Core 的 include 属性通常直接指向 .../qt6 或 .../include，
+          # 此时其父目录才是可用于本脚本的根目录。
+          if(NOT _obsharp_qt_resolved)
+            get_filename_component(_parent "${_candidate}" DIRECTORY)
+            _obsharp_qt_probe_root("${_parent}")
+          endif()
+
+          if(_obsharp_qt_resolved)
+            break()
+          endif()
+        endforeach()
+      endif()
+
+      # framework 布局下 Qt6::Core 未必暴露头文件目录，
+      # 可直接从导入目标的位置属性反推 framework 所在目录。
+      if(NOT _obsharp_qt_resolved)
+        foreach(_property IN ITEMS IMPORTED_LOCATION_RELEASE IMPORTED_LOCATION)
+          get_target_property(_obsharp_qt_core_location
+            Qt6::Core "${_property}")
+          if(_obsharp_qt_core_location AND
+             _obsharp_qt_core_location MATCHES "^(.*)/QtCore\\.framework/")
+            _obsharp_qt_probe_root("${CMAKE_MATCH_1}")
+            if(_obsharp_qt_resolved)
+              break()
+            endif()
+          endif()
+        endforeach()
+      endif()
+    endif()
+  endif()
+
+  # 4) 最后从 .deps 中按目录名倒序探测（兼容 include 与 framework 布局）。
+  if(NOT _obsharp_qt_resolved)
+    file(GLOB _obsharp_deps_qt_candidates
+      LIST_DIRECTORIES TRUE
+      "${_obsharp_project_root}/.deps/obs-deps-qt6-*"
+    )
+    list(SORT _obsharp_deps_qt_candidates ORDER DESCENDING)
+
+    foreach(_candidate IN LISTS _obsharp_deps_qt_candidates)
+      if(_obsharp_qt_resolved)
         break()
       endif()
+      _obsharp_qt_probe_root("${_candidate}")
     endforeach()
   endif()
 endif()
 
-if(NOT IS_DIRECTORY "${_obsharp_qt_include}" OR
-   NOT EXISTS "${_obsharp_qt_include}/QtCore/QtCore")
+if(NOT _obsharp_qt_resolved)
   message(FATAL_ERROR
     "OBSharp: 未找到有效的 Qt 头文件目录。"
     " 请设置 OBSHARP_QT_INCLUDE_DIR，或确认 obs-deps.cmake 已准备好 Qt。"
-    " 当前路径：${_obsharp_qt_include}")
+    " 已尝试的候选根目录：${_obsharp_qt_root_candidates}")
 endif()
 
-get_filename_component(_obsharp_qt_include
-  "${_obsharp_qt_include}" REALPATH)
+if(_obsharp_qt_frameworks_dir)
+  _obsharp_qt_module_dir("Core" _obsharp_qt_core_module_dir)
+else()
+  set(_obsharp_qt_core_module_dir "${_obsharp_qt_include}/QtCore")
+endif()
 
-message(STATUS "OBSharp: Qt 头文件目录：${_obsharp_qt_include}")
-message(STATUS "OBSharp: 生成器：dotnet tool run OBSharp.Interop.NativeBindGenerator")
+if(NOT IS_DIRECTORY "${_obsharp_qt_core_module_dir}" OR
+   NOT EXISTS "${_obsharp_qt_core_module_dir}/QtCore")
+  message(FATAL_ERROR
+    "OBSharp: 未找到有效的 Qt 头文件目录。"
+    " 请设置 OBSHARP_QT_INCLUDE_DIR，或确认 obs-deps.cmake 已准备好 Qt。"
+    " 当前 include 目录：'${_obsharp_qt_include}'"
+    " 当前 framework 目录：'${_obsharp_qt_frameworks_dir}'")
+endif()
+
+if(_obsharp_qt_include AND IS_DIRECTORY "${_obsharp_qt_include}")
+  get_filename_component(_obsharp_qt_include
+    "${_obsharp_qt_include}" REALPATH)
+endif()
+
+if(_obsharp_qt_frameworks_dir)
+  get_filename_component(_obsharp_qt_frameworks_dir
+    "${_obsharp_qt_frameworks_dir}" REALPATH)
+  message(STATUS "OBSharp: Qt framework 目录：${_obsharp_qt_frameworks_dir}")
+else()
+  message(STATUS "OBSharp: Qt 头文件目录：${_obsharp_qt_include}")
+endif()
 
 # -------------------------------------------------------------------------
 # 收集各模块的公共头文件
@@ -150,13 +319,41 @@ set(_obsharp_public_header_exclude
   "(_p|_impl|_win|_mac|_platform)\\.h$|^q.*global\\.h$|^q(t_)?(win|mac|darwin|ios|android|unix|bsd|freebsd|wasm|nx|platform).*\\.h$"
 )
 
+# 判定某个头文件能否独立用于公开绑定生成。
+#
+# Linux 发行版的 Qt 会额外安装一批由 D-Bus 在构建期生成的头文件
+# （如 QtGui/bus_interface.h、cache_adaptor.h 等），它们属于 AT-SPI
+# 无障碍桥的内部实现，却位于公开 include 目录中。这些头文件会
+# #include <QtGui/private/...>，而 Qt 私有头文件由单独的
+# qt6-base-private-dev 包提供；obs-deps 的 Windows/macOS 预编译包
+# 则根本不包含这些文件。
+#
+# 为了让三端生成的绑定保持一致，这里统一跳过依赖私有头文件的头文件。
+function(_obsharp_header_is_public_api _header _result_var)
+  file(READ "${_header}" _header_content)
+
+  if(_header_content MATCHES
+     "#[ \t]*include[ \t]*[<\"]Qt[A-Za-z0-9]*/private/")
+    set("${_result_var}" FALSE PARENT_SCOPE)
+  else()
+    set("${_result_var}" TRUE PARENT_SCOPE)
+  endif()
+endfunction()
+
 set(_obsharp_module_header_map "")
 set(_obsharp_generated_modules "")
 set(_obsharp_header_arguments "")
 
 foreach(_module IN LISTS OBSHARP_QT_MODULES)
   set(_module_name "Qt${_module}")
-  set(_module_dir "${_obsharp_qt_include}/${_module_name}")
+  _obsharp_qt_module_dir("${_module}" _module_dir)
+
+  if(NOT _module_dir)
+    message(WARNING
+      "OBSharp: 跳过 ${_module_name}：未找到该模块的头文件目录。")
+    continue()
+  endif()
+
   set(_umbrella_header "${_module_dir}/${_module_name}")
 
   if(NOT EXISTS "${_umbrella_header}")
@@ -170,12 +367,27 @@ foreach(_module IN LISTS OBSHARP_QT_MODULES)
   list(SORT _module_headers)
 
   set(_public_headers "")
+  set(_skipped_private_headers "")
   foreach(_header IN LISTS _module_headers)
     get_filename_component(_header_name "${_header}" NAME)
-    if(NOT _header_name MATCHES "${_obsharp_public_header_exclude}")
-      list(APPEND _public_headers "${_header}")
+    if(_header_name MATCHES "${_obsharp_public_header_exclude}")
+      continue()
     endif()
+
+    _obsharp_header_is_public_api("${_header}" _header_is_public_api)
+    if(NOT _header_is_public_api)
+      list(APPEND _skipped_private_headers "${_header_name}")
+      continue()
+    endif()
+
+    list(APPEND _public_headers "${_header}")
   endforeach()
+
+  if(_skipped_private_headers)
+    message(STATUS
+      "OBSharp: ${_module_name} 跳过依赖 Qt 私有头文件的文件："
+      "${_skipped_private_headers}")
+  endif()
 
   if(NOT _public_headers)
     message(WARNING
@@ -199,7 +411,9 @@ endforeach()
 
 if(NOT _obsharp_generated_modules)
   message(FATAL_ERROR
-    "OBSharp: 在 ${_obsharp_qt_include} 下没有找到任何可生成的 Qt 模块。")
+    "OBSharp: 没有找到任何可生成的 Qt 模块。"
+    " include 目录：'${_obsharp_qt_include}'"
+    " framework 目录：'${_obsharp_qt_frameworks_dir}'")
 endif()
 
 # -------------------------------------------------------------------------
@@ -213,15 +427,29 @@ else()
 endif()
 
 set(_obsharp_clang_arguments
-  "-I"
-  "${_obsharp_qt_include}"
   "-std=${_obsharp_clang_standard}"
 )
+
+if(_obsharp_qt_include)
+  list(APPEND _obsharp_clang_arguments
+    "-I" "${_obsharp_qt_include}")
+endif()
+
+if(_obsharp_qt_frameworks_dir)
+  # framework 布局下 Qt 头文件使用 <QtCore/...> 形式互相引用。
+  list(APPEND _obsharp_clang_arguments
+    "-F" "${_obsharp_qt_frameworks_dir}")
+endif()
 
 if(DEFINED OBSHARP_CLANG_TARGET_TRIPLE AND
    NOT "${OBSHARP_CLANG_TARGET_TRIPLE}" STREQUAL "")
   list(APPEND _obsharp_clang_arguments
     "--target=${OBSHARP_CLANG_TARGET_TRIPLE}")
+elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+  # macOS 交叉编译时显式指定目标架构，避免 Clang 按宿主机架构解析 Qt 头文件。
+  list(APPEND _obsharp_clang_arguments "--target=arm64-apple-darwin")
+elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
+  list(APPEND _obsharp_clang_arguments "--target=x86_64-apple-darwin")
 endif()
 
 if(APPLE)
