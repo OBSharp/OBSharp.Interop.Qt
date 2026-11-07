@@ -7,7 +7,7 @@ namespace OBSharp.Interop.Qt;
 /// 可空句柄参数封送器（null ↔ 原生 NULL），用于生成代码里 <c>Xxx?</c> 形态的句柄参数。
 /// </summary>
 [CustomMarshaller(typeof(SafeHandle), MarshalMode.ManagedToUnmanagedIn, typeof(NullableSafeHandleMarshaller))]
-public struct NullableSafeHandleMarshaller
+internal struct NullableSafeHandleMarshaller
 {
     /// <summary>
     /// 原生侧函数只在调用期间使用句柄指针；null 映射为 0。
