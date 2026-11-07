@@ -4,14 +4,24 @@
 # 用法：在 obs-deps.cmake 之后 include 本文件。
 #
 # 可选配置变量（在 include 本文件之前设置）：
-#   OBSHARP_QT_MODULES          Qt 模块列表（不带 Qt 前缀）
-#   OBSHARP_QT_INCLUDE_DIR      Qt 头文件根目录
-#   OBSHARP_CLANG_TARGET_TRIPLE Clang target triple
+#   OBSHARP_QT_MODULES            Qt 模块列表（不带 Qt 前缀）
+#   OBSHARP_QT_INCLUDE_DIR        Qt 头文件根目录
+#   OBSHARP_CLANG_TARGET_TRIPLE   Clang target triple
 #   OBSHARP_SOURCEGEN_NATIVE_ONLY 仅生成非托管源码（ON/OFF）
+#
+# 也可在配置时用 -D 覆盖：
+#   OBSHARP_MINIMAL_INCLUDES  按类最小化 include（默认 ON）
+#   OBSHARP_RELATIVE_INCLUDES 生成相对 include（默认 ON）
+#   OBSHARP_BATCH_SIZE        每 N 个类合并一个 .cpp（默认 1）
+#
+# 生成器版本由项目根目录的 dotnet-tools.json 固定，本文件要求
+# OBSharp.Interop.NativeBindGenerator 0.0.1-alpha.5 及以上：该版本起
+# --minimal-includes / --relative-includes / --batch-size 三个选项与
+# <native-name>.pch.h 预编译头都是标配产物，无需再做能力探测或自行拼装。
 #
 # 例如：
 #   set(OBSHARP_SOURCEGEN_NATIVE_ONLY OFF)
-#   include("${CMAKE_CURRENT_LIST_DIR}/Invoke-SourceGenerator.cmake")
+#   include("${CMAKE_CURRENT_LIST_DIR}/code-gen.cmake")
 # =========================================================================
 
 # 由项目根目录的 CMakeLists.txt 负责声明 cmake_minimum_required。
@@ -60,6 +70,7 @@ endif()
 get_filename_component(_obsharp_project_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(_obsharp_native_project "${_obsharp_project_root}/src/OBSharp.Interop.Qt.Native")
 set(_obsharp_managed_project "${_obsharp_project_root}/src/OBSharp.Interop.Qt")
+set(_obsharp_native_name "OBSharp.Interop.Qt.Native")
 set(_obsharp_native_output "${_obsharp_native_project}/Generated")
 set(_obsharp_managed_output "${_obsharp_managed_project}/Generated")
 
@@ -340,7 +351,6 @@ function(_obsharp_header_is_public_api _header _result_var)
   endif()
 endfunction()
 
-set(_obsharp_module_header_map "")
 set(_obsharp_generated_modules "")
 set(_obsharp_header_arguments "")
 
@@ -398,14 +408,7 @@ foreach(_module IN LISTS OBSHARP_QT_MODULES)
   list(APPEND _obsharp_generated_modules "${_module}")
 
   foreach(_header IN LISTS _public_headers)
-    # Clang response file 中含空格的参数必须使用双引号。
-    if(_header MATCHES "[ \t]")
-      string(REPLACE "\\" "\\\\" _rsp_header "${_header}")
-      string(REPLACE "\"" "\\\"" _rsp_header "${_rsp_header}")
-      list(APPEND _obsharp_header_arguments "--header \"${_rsp_header}\"")
-    else()
-      list(APPEND _obsharp_header_arguments "--header ${_header}")
-    endif()
+    list(APPEND _obsharp_header_arguments "--header" "${_header}")
   endforeach()
 endforeach()
 
@@ -666,17 +669,56 @@ elseif(WIN32)
 endif()
 
 # -------------------------------------------------------------------------
-# 生成响应文件
+# 生成器选项
 # -------------------------------------------------------------------------
 
-set(_obsharp_rsp_lines "")
-list(APPEND _obsharp_rsp_lines ${_obsharp_header_arguments})
+# 生成器由 dotnet-tools.json 固定版本，`dotnet tool run` 的 `--`
+# 用于分隔 dotnet 自身的参数与工具参数。
+set(_obsharp_generator_execute_command
+  dotnet tool run OBSharp.Interop.NativeBindGenerator --)
+
+# 旧版生成器没有 --minimal-includes / --relative-includes / --batch-size，
+# 也没有 <native-name>.pch.h 产物；本文件直接假定 0.0.1-alpha.5 及以上，
+# 缺选项时由生成器自己报错，不再做运行时能力探测。
+option(OBSHARP_MINIMAL_INCLUDES
+  "每个类只包含实际用到的头文件（大幅减少单 TU 头文件数量）"
+  ON)
+option(OBSHARP_RELATIVE_INCLUDES
+  "生成的 include 使用相对路径（便于编译缓存跨机器复用）"
+  ON)
+set(OBSHARP_BATCH_SIZE "1"
+  CACHE STRING
+  "每 N 个类合并为一个翻译单元（1 表示每个类一个 .cpp）")
+
+if(NOT "${OBSHARP_BATCH_SIZE}" MATCHES "^[0-9]+$")
+  message(FATAL_ERROR
+    "OBSharp: OBSHARP_BATCH_SIZE 必须是正整数：'${OBSHARP_BATCH_SIZE}'")
+endif()
+if(OBSHARP_BATCH_SIZE LESS 1)
+  message(FATAL_ERROR
+    "OBSharp: OBSHARP_BATCH_SIZE 必须大于等于 1：'${OBSHARP_BATCH_SIZE}'")
+endif()
+
+set(_obsharp_generator_feature_arguments "")
+
+if(OBSHARP_MINIMAL_INCLUDES)
+  list(APPEND _obsharp_generator_feature_arguments "--minimal-includes")
+endif()
+
+if(OBSHARP_RELATIVE_INCLUDES)
+  list(APPEND _obsharp_generator_feature_arguments "--relative-includes")
+endif()
+
+if(OBSHARP_BATCH_SIZE GREATER 1)
+  list(APPEND _obsharp_generator_feature_arguments
+    "--batch-size" "${OBSHARP_BATCH_SIZE}")
+endif()
 
 set(_obsharp_generator_arguments
   "--namespace"
   "OBSharp.Interop.Qt"
   "--library-name"
-  "OBSharp.Interop.Qt.Native"
+  "${_obsharp_native_name}"
   "--cpp-redirect"
   "--qt"
   "--csharp-output"
@@ -684,20 +726,41 @@ set(_obsharp_generator_arguments
   "--native-output"
   "${_obsharp_native_output}"
   "--native-name"
-  "OBSharp.Interop.Qt.Native"
+  "${_obsharp_native_name}"
   "--return-string-marshaller"
   "OBSharp.Interop.Qt.NoFreeUTF8StringMarshaller"
   "--nullable-handle-marshaller"
   "OBSharp.Interop.Qt.NullableSafeHandleMarshaller"
-  "--"
 )
+list(APPEND _obsharp_generator_arguments ${_obsharp_generator_feature_arguments})
+# `--` 之后的内容原样交给 libclang，必须放在全部生成器选项之后。
+list(APPEND _obsharp_generator_arguments "--")
 
-# 将生成器参数转换成响应文件的逐行参数格式。
-foreach(_argument IN LISTS _obsharp_generator_arguments _obsharp_clang_arguments)
+# -------------------------------------------------------------------------
+# 生成响应文件
+# -------------------------------------------------------------------------
+
+# 响应文件的词法规则（由 System.CommandLine 的 ResponseFileTokenizer 决定，
+# 已用生成器 0.0.1-alpha.5 实测）：
+#   * 每行是一个参数，行首行尾空白被裁剪，空行被忽略；
+#   * 含空格的参数可用双引号包裹，但引号只做"去壳"，**不参与转义**——
+#     引号内的反斜杠原样保留，`\"` 不等于转义引号，而是"结束字符串"；
+#   * 因此 Windows 路径必须原样书写，不能把反斜杠加倍，否则路径会变成
+#     `C:\\dir\\file.h` 而找不到头文件；
+#   * 参数内部不能出现双引号；单引号不具任何特殊含义。
+# 这里据此把含空格的参数整体加引号，并直接拒绝含双引号的参数。
+set(_obsharp_rsp_lines "")
+
+foreach(_argument IN LISTS _obsharp_header_arguments
+                            _obsharp_generator_arguments
+                            _obsharp_clang_arguments)
+  if(_argument MATCHES "\"")
+    message(FATAL_ERROR
+      "OBSharp: 生成器参数不能包含双引号（响应文件不支持转义）：'${_argument}'")
+  endif()
+
   if(_argument MATCHES "[ \t]")
-    string(REPLACE "\\" "\\\\" _rsp_argument "${_argument}")
-    string(REPLACE "\"" "\\\"" _rsp_argument "${_rsp_argument}")
-    list(APPEND _obsharp_rsp_lines "\"${_rsp_argument}\"")
+    list(APPEND _obsharp_rsp_lines "\"${_argument}\"")
   else()
     list(APPEND _obsharp_rsp_lines "${_argument}")
   endif()
@@ -728,8 +791,8 @@ endif()
 message(STATUS "OBSharp: 正在生成 Qt 绑定（模块：${_obsharp_generated_modules}）")
 
 execute_process(
-  COMMAND dotnet tool run OBSharp.Interop.NativeBindGenerator
-    -- "@${_obsharp_response_file}"
+  COMMAND ${_obsharp_generator_execute_command}
+    "@${_obsharp_response_file}"
   WORKING_DIRECTORY "${_obsharp_project_root}"
   RESULT_VARIABLE _obsharp_generator_result
   ENCODING ANSI
@@ -743,6 +806,28 @@ if(NOT _obsharp_generator_result EQUAL 0)
 endif()
 
 # -------------------------------------------------------------------------
+# 校验预编译头（PCH）
+# -------------------------------------------------------------------------
+# PCH 由生成器自己产出：${_obsharp_native_name}.pch.h，内容是全部模块公共
+# 头文件的 include 列表，顺序与每个类 .cpp 的 preamble 完全一致。生成器
+# 在 --cpp-redirect 下无条件写出该文件，因此这里不再自行拼装——两处都写
+# 会因目录层级不同而解析到不同的同名头文件副本（MSVC C2084/C2995）。
+#
+# cpp_marshaller.hpp 不在 PCH 中：它只有几 KB，让每个 TU 自己包含的成本
+# 可以忽略，而放进 PCH 会让附属库子目录解析到另一份副本。
+set(_obsharp_pch_header
+  "${_obsharp_native_output}/${_obsharp_native_name}.pch.h")
+
+if(NOT EXISTS "${_obsharp_pch_header}")
+  message(FATAL_ERROR
+    "OBSharp: 生成器没有输出预编译头：${_obsharp_pch_header}"
+    "\n请确认 OBSharp.Interop.NativeBindGenerator 为 0.0.1-alpha.5 或更高版本"
+    "（见 dotnet-tools.json），并已执行 dotnet tool restore。")
+endif()
+
+message(STATUS "OBSharp: 预编译头：${_obsharp_pch_header}")
+
+# -------------------------------------------------------------------------
 # 生成 CMake 模块清单
 # -------------------------------------------------------------------------
 
@@ -751,7 +836,11 @@ set(_obsharp_manifest
 foreach(_module IN LISTS _obsharp_generated_modules)
   string(APPEND _obsharp_manifest "  ${_module}\n")
 endforeach()
-string(APPEND _obsharp_manifest ")\n")
+string(APPEND _obsharp_manifest ")\n\n")
+
+# 同时把 PCH 路径交给 Native CMakeLists，避免它自己猜测产物名。
+string(APPEND _obsharp_manifest
+  "set(OBSHARP_QT_PCH_HEADER\n  \"${_obsharp_pch_header}\")\n")
 
 file(WRITE
   "${_obsharp_native_output}/generated-modules.cmake"
