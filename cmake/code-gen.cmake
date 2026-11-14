@@ -9,15 +9,10 @@
 #   OBSHARP_CLANG_TARGET_TRIPLE   Clang target triple
 #   OBSHARP_SOURCEGEN_NATIVE_ONLY 仅生成非托管源码（ON/OFF）
 #
-# 也可在配置时用 -D 覆盖：
-#   OBSHARP_MINIMAL_INCLUDES  按类最小化 include（默认 ON）
-#   OBSHARP_RELATIVE_INCLUDES 生成相对 include（默认 ON）
-#   OBSHARP_BATCH_SIZE        每 N 个类合并一个 .cpp（默认 1）
-#
 # 生成器版本由项目根目录的 dotnet-tools.json 固定，本文件要求
-# OBSharp.Interop.NativeBindGenerator 0.0.1-alpha.5 及以上：该版本起
-# --minimal-includes / --relative-includes / --batch-size 三个选项与
-# <native-name>.pch.h 预编译头都是标配产物，无需再做能力探测或自行拼装。
+# OBSharp.Interop.NativeBindGenerator 0.0.1-alpha.7 及以上：该版本起
+# 生成器改用子命令形式（以 `qt` 子命令取代旧的 --qt 开关），并固定产出
+# <native-name>.pch.h 预编译头，无需再做能力探测或自行拼装。
 #
 # 例如：
 #   set(OBSHARP_SOURCEGEN_NATIVE_ONLY OFF)
@@ -673,54 +668,19 @@ endif()
 # -------------------------------------------------------------------------
 
 # 生成器由 dotnet-tools.json 固定版本，`dotnet tool run` 的 `--`
-# 用于分隔 dotnet 自身的参数与工具参数。
+# 用于分隔 dotnet 自身的参数与工具参数。生成器改为子命令形式后，
+# `qt` 子命令必须作为第一个工具参数传入，其后的选项才按 qt 解析。
 set(_obsharp_generator_execute_command
-  dotnet tool run OBSharp.Interop.NativeBindGenerator --)
+  dotnet tool run OBSharp.Interop.NativeBindGenerator -- qt)
 
-# 旧版生成器没有 --minimal-includes / --relative-includes / --batch-size，
-# 也没有 <native-name>.pch.h 产物；本文件直接假定 0.0.1-alpha.5 及以上，
-# 缺选项时由生成器自己报错，不再做运行时能力探测。
-option(OBSHARP_MINIMAL_INCLUDES
-  "每个类只包含实际用到的头文件（大幅减少单 TU 头文件数量）"
-  ON)
-option(OBSHARP_RELATIVE_INCLUDES
-  "生成的 include 使用相对路径（便于编译缓存跨机器复用）"
-  ON)
-set(OBSHARP_BATCH_SIZE "1"
-  CACHE STRING
-  "每 N 个类合并为一个翻译单元（1 表示每个类一个 .cpp）")
-
-if(NOT "${OBSHARP_BATCH_SIZE}" MATCHES "^[0-9]+$")
-  message(FATAL_ERROR
-    "OBSharp: OBSHARP_BATCH_SIZE 必须是正整数：'${OBSHARP_BATCH_SIZE}'")
-endif()
-if(OBSHARP_BATCH_SIZE LESS 1)
-  message(FATAL_ERROR
-    "OBSharp: OBSHARP_BATCH_SIZE 必须大于等于 1：'${OBSHARP_BATCH_SIZE}'")
-endif()
-
-set(_obsharp_generator_feature_arguments "")
-
-if(OBSHARP_MINIMAL_INCLUDES)
-  list(APPEND _obsharp_generator_feature_arguments "--minimal-includes")
-endif()
-
-if(OBSHARP_RELATIVE_INCLUDES)
-  list(APPEND _obsharp_generator_feature_arguments "--relative-includes")
-endif()
-
-if(OBSHARP_BATCH_SIZE GREATER 1)
-  list(APPEND _obsharp_generator_feature_arguments
-    "--batch-size" "${OBSHARP_BATCH_SIZE}")
-endif()
-
+# 子命令形式取代了旧版的 --qt / --cpp-redirect / --minimal-includes /
+# --relative-includes / --batch-size：这些行为现在是生成器的固定实现，
+# 不再有对应开关，缺选项时由生成器自己报错，本文件不做运行时能力探测。
 set(_obsharp_generator_arguments
   "--namespace"
   "OBSharp.Interop.Qt"
   "--library-name"
   "${_obsharp_native_name}"
-  "--cpp-redirect"
-  "--qt"
   "--csharp-output"
   "${_obsharp_managed_output}"
   "--native-output"
@@ -732,7 +692,6 @@ set(_obsharp_generator_arguments
   "--nullable-handle-marshaller"
   "OBSharp.Interop.Qt.NullableSafeHandleMarshaller"
 )
-list(APPEND _obsharp_generator_arguments ${_obsharp_generator_feature_arguments})
 # `--` 之后的内容原样交给 libclang，必须放在全部生成器选项之后。
 list(APPEND _obsharp_generator_arguments "--")
 
@@ -741,7 +700,7 @@ list(APPEND _obsharp_generator_arguments "--")
 # -------------------------------------------------------------------------
 
 # 响应文件的词法规则（由 System.CommandLine 的 ResponseFileTokenizer 决定，
-# 已用生成器 0.0.1-alpha.5 实测）：
+# 已用生成器 0.0.1-alpha.8 实测）：
 #   * 每行是一个参数，行首行尾空白被裁剪，空行被忽略；
 #   * 含空格的参数可用双引号包裹，但引号只做"去壳"，**不参与转义**——
 #     引号内的反斜杠原样保留，`\"` 不等于转义引号，而是"结束字符串"；
@@ -790,12 +749,17 @@ endif()
 
 message(STATUS "OBSharp: 正在生成 Qt 绑定（模块：${_obsharp_generated_modules}）")
 
+# 生成器的进度信息取自交互终端，被重定向到管道时只输出英文；仅在
+# execute_process 里捕获输出时才会带上中文。CMake 3.20 的 ENCODING 只认
+# ANSI，捕获中文进度会变成乱码，因此这里不捕获输出（OUTPUT/ERROR_QUIET），
+# 生成器的进度与诊断直接进构建日志；成功与否只看退出码。
 execute_process(
   COMMAND ${_obsharp_generator_execute_command}
     "@${_obsharp_response_file}"
   WORKING_DIRECTORY "${_obsharp_project_root}"
   RESULT_VARIABLE _obsharp_generator_result
-  ENCODING ANSI
+  OUTPUT_QUIET
+  ERROR_QUIET
 )
 
 file(REMOVE "${_obsharp_response_file}")
@@ -810,22 +774,38 @@ endif()
 # -------------------------------------------------------------------------
 # PCH 由生成器自己产出：${_obsharp_native_name}.pch.h，内容是全部模块公共
 # 头文件的 include 列表，顺序与每个类 .cpp 的 preamble 完全一致。生成器
-# 在 --cpp-redirect 下无条件写出该文件，因此这里不再自行拼装——两处都写
-# 会因目录层级不同而解析到不同的同名头文件副本（MSVC C2084/C2995）。
+# 现在无条件写出该文件，因此这里不再自行拼装——两处都写会因目录层级不同
+# 而解析到不同的同名头文件副本（MSVC C2084/C2995）。
 #
-# cpp_marshaller.hpp 不在 PCH 中：它只有几 KB，让每个 TU 自己包含的成本
-# 可以忽略，而放进 PCH 会让附属库子目录解析到另一份副本。
+# cpp_shim_marshal.hpp / qt_shim_marshal.hpp 不在 PCH 中：它们只有几 KB，
+# 让每个 TU 自己包含的成本可以忽略，而放进 PCH 会让附属库子目录解析到
+# 另一份副本。
 set(_obsharp_pch_header
   "${_obsharp_native_output}/${_obsharp_native_name}.pch.h")
 
 if(NOT EXISTS "${_obsharp_pch_header}")
   message(FATAL_ERROR
     "OBSharp: 生成器没有输出预编译头：${_obsharp_pch_header}"
-    "\n请确认 OBSharp.Interop.NativeBindGenerator 为 0.0.1-alpha.5 或更高版本"
+    "\n请确认 OBSharp.Interop.NativeBindGenerator 为 0.0.1-alpha.7 或更高版本"
     "（见 dotnet-tools.json），并已执行 dotnet tool restore。")
 endif()
 
 message(STATUS "OBSharp: 预编译头：${_obsharp_pch_header}")
+
+# 生成器还会写出自包含的 CMake 清单 <native-name>.cmake：每个共享库一个
+# add_library，源文件与 include 目录已写进清单，Native CMakeLists 只需在其
+# 基础上补 Qt 依赖与编译选项。
+set(_obsharp_native_manifest
+  "${_obsharp_native_output}/${_obsharp_native_name}.cmake")
+
+if(NOT EXISTS "${_obsharp_native_manifest}")
+  message(FATAL_ERROR
+    "OBSharp: 生成器没有输出共享库清单：${_obsharp_native_manifest}"
+    "\n请确认 OBSharp.Interop.NativeBindGenerator 为 0.0.1-alpha.7 或更高版本"
+    "（见 dotnet-tools.json），并已执行 dotnet tool restore。")
+endif()
+
+message(STATUS "OBSharp: 共享库清单：${_obsharp_native_manifest}")
 
 # -------------------------------------------------------------------------
 # 生成 CMake 模块清单
@@ -838,9 +818,10 @@ foreach(_module IN LISTS _obsharp_generated_modules)
 endforeach()
 string(APPEND _obsharp_manifest ")\n\n")
 
-# 同时把 PCH 路径交给 Native CMakeLists，避免它自己猜测产物名。
+# 同时把 PCH 路径与共享库清单交给 Native CMakeLists，避免它自己猜测产物名。
 string(APPEND _obsharp_manifest
-  "set(OBSHARP_QT_PCH_HEADER\n  \"${_obsharp_pch_header}\")\n")
+  "set(OBSHARP_QT_PCH_HEADER\n  \"${_obsharp_pch_header}\")\n\n"
+  "set(OBSHARP_NATIVE_MANIFEST\n  \"${_obsharp_native_manifest}\")\n")
 
 file(WRITE
   "${_obsharp_native_output}/generated-modules.cmake"
