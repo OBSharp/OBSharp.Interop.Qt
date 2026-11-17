@@ -259,7 +259,8 @@ jobs:
           retention-days: 3
 
   comment:
-    needs: build
+    # nuget-packages 由 collect 上传，等 build 会在产物上传前就去下载
+    needs: collect
     name: 评论
     if: github.event_name == 'pull_request'
     permissions:
@@ -314,7 +315,8 @@ jobs:
             --edit-last
 
   release:
-    needs: build
+    # nuget-packages 是 collect 合并上传的，只等 build 会在产物出现前就下载（Artifact not found）
+    needs: collect
     name: 发布
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
