@@ -248,7 +248,7 @@ jobs:
             }
 
       - name: 生成元包
-        run: dotnet pack .\src\Meta\ --graph --artifacts-path artifacts --configuration Release --include-symbols --include-source
+        run: dotnet pack .\src\OBSharp.Interop.Qt\ --graph --artifacts-path artifacts --configuration Release --include-symbols --include-source
 
       - name: 收集 NuGet 包
         uses: actions/upload-artifact@v7
