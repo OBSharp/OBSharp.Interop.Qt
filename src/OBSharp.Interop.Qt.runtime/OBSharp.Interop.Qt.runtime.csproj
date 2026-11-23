@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <PackageId>OBSharp.Interop.Qt.$(RuntimeIdentifier)</PackageId>
+    <RootNamespace>OBSharp.Interop.Qt</RootNamespace>
+    <PackageId>OBSharp.Interop.Qt.runtime.$(RuntimeIdentifier)</PackageId>
     <DisableRuntimeMarshalling>true</DisableRuntimeMarshalling>
   </PropertyGroup>
 
