@@ -19,6 +19,16 @@
       "OBSharp.Interop.Qt": {
         "OBSharp.Interop.Qt.runtime.linux-arm64": "{{VERSION}}"
       }
+    },
+    "osx-x64": {
+      "OBSharp.Interop.Qt": {
+        "OBSharp.Interop.Qt.runtime.osx-x64": "{{VERSION}}"
+      }
+    },
+    "osx-arm64": {
+      "OBSharp.Interop.Qt": {
+        "OBSharp.Interop.Qt.runtime.osx-arm64": "{{VERSION}}"
+      }
     }
   }
 }

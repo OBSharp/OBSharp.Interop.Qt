@@ -14,7 +14,7 @@
   <ItemGroup>
     <RuntimeJsonTemplate Include="runtime.json.template" />
   </ItemGroup>
-  
+
   <UsingTask
     TaskName="GenerateRuntimeJson"
     TaskFactory="RoslynCodeTaskFactory"
@@ -85,9 +85,9 @@
   </Target>
 
   <!--
-    Drop the empty assembly/XML output from the .nupkg while keeping
+    Strip the (empty) assembly/XML output from the .nupkg while keeping
     @(_TargetPathsToSymbols), so the .snupkg is valid but the package still
-    behaves as a pure meta package.
+    behaves as a pure meta package: no lib/ folder in the .nupkg.
   -->
   <Target Name="StripBuildOutputFromPackage"
           AfterTargets="_WalkEachTargetPerFramework">

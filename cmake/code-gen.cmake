@@ -64,7 +64,7 @@ endif()
 # 本文件预期位于项目根目录的 cmake/ 目录。
 get_filename_component(_obsharp_project_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(_obsharp_native_project "${_obsharp_project_root}/src/OBSharp.Interop.Qt.Native")
-set(_obsharp_managed_project "${_obsharp_project_root}/src/OBSharp.Interop.Qt")
+set(_obsharp_managed_project "${_obsharp_project_root}/src/OBSharp.Interop.Qt.runtime")
 set(_obsharp_native_name "OBSharp.Interop.Qt.Native")
 set(_obsharp_native_output "${_obsharp_native_project}/Generated")
 set(_obsharp_managed_output "${_obsharp_managed_project}/Generated")
